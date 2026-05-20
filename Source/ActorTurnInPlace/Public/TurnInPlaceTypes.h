@@ -474,6 +474,7 @@ struct ACTORTURNINPLACE_API FTurnInPlaceAnimGraphData
 	FTurnInPlaceAnimGraphData()
 		: TurnOffset(0)
 		, bIsTurning(false)
+		, bWasTurningThisEntry(false)
 		, bWantsToTurn(false)
 		, bAbortTurn(false)
 		, bTurnRight(false)
@@ -497,6 +498,14 @@ struct ACTORTURNINPLACE_API FTurnInPlaceAnimGraphData
 	 */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)
 	bool bIsTurning;
+
+	/**
+	 * Latched true on the worker thread once TurnYawWeight has been observed >0 since the last entry into TurnInPlace.
+	 * Reset by the anim graph in Setup_TurnInPlace_Pose. Used to gate bWantsTurnRecovery so the recovery transition
+	 * cannot fire on the entry frame (when curves are still stale from the previous state).
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)
+	bool bWasTurningThisEntry;
 
 	/** TurnOffset is greater than MinTurnAngle or doing a small turn, used by anim graph to transition to turn */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)

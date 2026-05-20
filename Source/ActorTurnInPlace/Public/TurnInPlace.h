@@ -295,6 +295,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category=Turn)
 	FTurnInPlaceAnimGraphData UpdateAnimGraphData(float DeltaTime) const;
 
+	/**
+	 * Refresh state-derived anim graph data using up-to-date curve values cached in the worker thread.
+	 *
+	 * Why: NativeUpdateAnimation runs on the game thread before the worker thread caches the latest curves,
+	 * so bIsTurning, bAbortTurn, bWantsToTurn computed there lag the actual pose by up to two frames.
+	 * That lag lets the recovery transition fire on the TurnInPlace entry frame (curves still reflect Idle),
+	 * causing the rapid TurnInPlace<->TurnRecovery oscillation.
+	 *
+	 * Call from the worker thread immediately after caching curve values and before the state machine update.
+	 * Also latches bWasTurningThisEntry so the recovery transition cannot fire until the turn-yaw-weight curve
+	 * has been observed driving the turn at least once for this entry.
+	 */
+	void ThreadSafeRefreshAnimGraphData(FTurnInPlaceAnimGraphData& AnimGraphData,
+		const FTurnInPlaceCurveValues& CurveValues, bool& bWasTurningThisEntry) const;
+
 	/** Called immediately after UpdateAnimGraphData() for post-processing */
 	UFUNCTION(BlueprintCallable, Category=Turn)
 	void PostUpdateAnimGraphData(float DeltaTime, FTurnInPlaceAnimGraphData& AnimGraphData, FTurnInPlaceAnimGraphOutput& TurnOutput);

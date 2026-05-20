@@ -371,18 +371,18 @@ ETurnInPlaceOverride UTurnInPlace::OverrideTurnInPlace_Implementation() const
 	}
 #endif
 
-	// Curve values are used to determine if we should pause or lock turn in place
+	// Curve values are used to determine if we should pause or lock turn in place.
+	// Use a one-sided threshold (>= 0.95) instead of IsNearlyEqual(.., 1.0, 0.05) so inertialization or curve
+	// overshoot above 1.05 doesn't disengage the override for a single frame and pop the state machine.
 	const FTurnInPlaceCurveValues& CurveValues = GetCurveValues();
 
-	if (FMath::IsNearlyEqual(CurveValues.PauseTurnInPlace, 1.f, 0.05f))
+	if (CurveValues.PauseTurnInPlace >= 0.95f)
 	{
-		// We want to pause turn in place if the weight curve is not 0
 		return ETurnInPlaceOverride::ForcePaused;
 	}
 
-	if (FMath::IsNearlyEqual(CurveValues.LockTurnInPlace, 1.f, 0.05f))
+	if (CurveValues.LockTurnInPlace >= 0.95f)
 	{
-		// We want to lock turn in place if the weight curve is not 0
 		return ETurnInPlaceOverride::ForceLocked;
 	}
 
@@ -562,9 +562,9 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 			TurnData.TurnOffset = (DesiredRotation - CurrentRotation).GetNormalized().Yaw;
 		}
 	}
-	
+
 	// Apply any turning from the animation sequence
-	float LastCurveValue = TurnData.CurveValue;
+	const float LastCurveValue = TurnData.CurveValue;
 	const FTurnInPlaceCurveValues CurveValues = GetCurveValues();
 	const float TurnYawWeight = CurveValues.TurnYawWeight;
 
@@ -578,30 +578,35 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 	{
 		// Apply the remaining yaw from the current animation (curve) that is playing, scaled by the weight curve
 		const float RemainingTurnYaw = CurveValues.RemainingTurnYaw;
-		TurnData.CurveValue = RemainingTurnYaw * TurnYawWeight;
+		const float NewCurveValue = RemainingTurnYaw * TurnYawWeight;
 
-		// Avoid applying curve delta when curve first becomes relevant again
-		if (!TurnData.bLastUpdateValidCurveValue)
-		{
-			TurnData.CurveValue = 0.f;
-			LastCurveValue = 0.f;
-		}
+		const bool bWasValid = TurnData.bLastUpdateValidCurveValue;
 		TurnData.bLastUpdateValidCurveValue = true;
 
-		// Don't apply if a direction change occurred (this avoids snapping when changing directions)
-		if (FMath::Sign(TurnData.CurveValue) == FMath::Sign(LastCurveValue))
+		// Only apply a delta if we already had a valid curve value last frame; the first relevant frame just
+		// captures the starting point. (Previously this branch zeroed TurnData.CurveValue, which then caused
+		// FMath::Sign(0) != FMath::Sign(non-zero) to skip the *second* frame's delta as well, losing curve
+		// progress and contributing to oscillation.)
+		if (bWasValid)
 		{
-			// Exceeding 180 degrees results in a snap, so maintain current rotation until the turn animation
-			// removes the excessive angle
-			const float NewTurnOffset = TurnData.TurnOffset + (TurnData.CurveValue - LastCurveValue);
-			if (FMath::Abs(NewTurnOffset) <= 180.f)
+			// Don't apply if a direction change occurred (this avoids snapping when changing directions).
+			// A previous value of 0 (e.g. resuming from an idle/recovery frame) is treated as same-direction.
+			const bool bSameDirection = LastCurveValue == 0.f
+				|| NewCurveValue == 0.f
+				|| FMath::Sign(NewCurveValue) == FMath::Sign(LastCurveValue);
+			if (bSameDirection)
 			{
-				if (TurnData.bLastUpdateValidCurveValue)
+				// Exceeding 180 degrees results in a snap, so maintain current rotation until the turn animation
+				// removes the excessive angle
+				const float NewTurnOffset = TurnData.TurnOffset + (NewCurveValue - LastCurveValue);
+				if (FMath::Abs(NewTurnOffset) <= 180.f)
 				{
 					TurnData.TurnOffset = NewTurnOffset;
 				}
 			}
 		}
+
+		TurnData.CurveValue = NewCurveValue;
 	}
 
 	// Clamp the turn in place to the max angle if provided; this prevents the character from under-rotating in
@@ -645,7 +650,7 @@ void UTurnInPlace::PostTurnInPlace(float LastTurnOffset)
 bool UTurnInPlace::FaceRotation(FRotator NewControlRotation, float DeltaTime)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UTurnInPlace::FaceRotation);
-	
+
 	// We only want to handle rotation if we are using FaceRotation() and not PhysicsRotation() based on our movement settings
 	if (GetTurnMethod() != ETurnMethod::FaceRotation)
 	{
@@ -658,7 +663,20 @@ bool UTurnInPlace::FaceRotation(FRotator NewControlRotation, float DeltaTime)
 		TurnData = {};
 		return true;
 	}
-	
+
+	// When DeltaTime is 0 this call is not the player controller asking us to face the control rotation; it is
+	// UCharacterMovementComponent::UpdateBasedMovement asking the actor to follow the movement base's rotation
+	// (see Engine/Private/Components/CharacterMovementComponent.cpp where FaceRotation is invoked with 0.f).
+	// Running the TurnInPlace logic on that input would treat the per-tick ship rotation delta as a fresh turn
+	// request, overwriting TurnData.TurnOffset with the tiny base delta and stealing the player's actual turn
+	// intent. The engine's UpdateBasedRotation then applies the actor's delta back to ControlRotation, producing
+	// the feedback loop where a turn on a rotating ship rotates the camera and re-triggers another turn.
+	// Defer to APawn::FaceRotation (and the engine's MoveUpdatedComponent fallback) for that pass-through.
+	if (DeltaTime == 0.f)
+	{
+		return false;
+	}
+
 	// Determine the correct params to use
 	const FTurnInPlaceParams Params = GetParams();
 	
@@ -682,8 +700,13 @@ bool UTurnInPlace::FaceRotation(FRotator NewControlRotation, float DeltaTime)
 		TurnInPlace(CurrentRotation, NewControlRotation);
 		return true;
 	}
-	
+
+	// Moving - clear turn-in-place state. We keep InterpOutAlpha (it drives the slerp below) but reset the curve
+	// fields so a subsequent stationary turn starts from a clean first-relevant-frame guard rather than from
+	// stale CurveValue / bLastUpdateValidCurveValue carried in from a previous, interrupted turn.
 	TurnData.TurnOffset = 0.f;
+	TurnData.CurveValue = 0.f;
+	TurnData.bLastUpdateValidCurveValue = false;
 
 	// This is ACharacter::FaceRotation(), but with interpolation for when we start moving so it doesn't snap
 	if (!MaybeCharacter->GetCharacterMovement()->bOrientRotationToMovement)
@@ -840,6 +863,35 @@ void UTurnInPlace::PostUpdateAnimGraphData(float DeltaTime, FTurnInPlaceAnimGrap
 {
 	// Note: We only have valid TurnOutput here if we are updating the pseudo anim state (i.e. dedicated server only!)
 	UpdatePseudoAnimState(DeltaTime, AnimGraphData, TurnOutput);
+}
+
+void UTurnInPlace::ThreadSafeRefreshAnimGraphData(FTurnInPlaceAnimGraphData& AnimGraphData,
+	const FTurnInPlaceCurveValues& CurveValues, bool& bWasTurningThisEntry) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UTurnInPlace::ThreadSafeRefreshAnimGraphData);
+
+	if (!HasValidData())
+	{
+		AnimGraphData.bWasTurningThisEntry = bWasTurningThisEntry;
+		return;
+	}
+
+	// Refresh bIsTurning against the just-cached curve so the state machine doesn't see a 2-frame stale value
+	AnimGraphData.bIsTurning = !FMath::IsNearlyZero(CurveValues.TurnYawWeight, KINDA_SMALL_NUMBER);
+
+	// Latch: once TurnYawWeight has fired this entry, it stays latched until the anim graph resets it on the next
+	// TurnInPlace entry. This is what blocks the recovery transition on the entry frame when curves are still stale.
+	if (AnimGraphData.bIsTurning)
+	{
+		bWasTurningThisEntry = true;
+	}
+	AnimGraphData.bWasTurningThisEntry = bWasTurningThisEntry;
+
+	// Note: we intentionally do NOT recompute bAbortTurn / bWantsToTurn here. Both depend on CanAbortTurnAnimation()
+	// (a BlueprintNativeEvent) and on game-thread-only overrides (camera mode, root motion montage, etc.) captured
+	// in NativeUpdateAnimation. The Pause/Lock-curve threshold fix in OverrideTurnInPlace_Implementation handles
+	// the curve overshoot case that was the main contributor to frame-stale flicker; remaining 1-2 frame lag for
+	// game-thread-driven aborts is harmless once the latch eliminates the entry-frame recovery firing.
 }
 
 void UTurnInPlace::UpdatePseudoAnimState(float DeltaTime, const FTurnInPlaceAnimGraphData& TurnAnimData,

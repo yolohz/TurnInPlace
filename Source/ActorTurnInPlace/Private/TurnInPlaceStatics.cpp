@@ -168,9 +168,13 @@ void UTurnInPlaceStatics::ThreadSafeUpdateTurnInPlace_Internal(const FTurnInPlac
 	// Turn anim graph properties
 	Output.TurnOffset = AnimGraphData.TurnOffset;
 
-	// Turn anim graph transitions
+	// Turn anim graph transitions.
+	// bWantsTurnRecovery requires bWasTurningThisEntry: the turn-yaw-weight curve must have been observed driving
+	// the turn at some point during this entry into TurnInPlace before the recovery transition is allowed to fire.
+	// Without this latch, the entry frame sees stale (Idle-era) curves and immediately fires recovery, producing
+	// the TurnInPlace<->TurnRecovery oscillation.
 	Output.bWantsToTurn = AnimGraphData.bWantsToTurn;
-	Output.bWantsTurnRecovery = !AnimGraphData.bIsTurning && !AnimGraphData.bAbortTurn;
+	Output.bWantsTurnRecovery = AnimGraphData.bWasTurningThisEntry && !AnimGraphData.bIsTurning && !AnimGraphData.bAbortTurn;
 	Output.bAbortTurn = AnimGraphData.bAbortTurn;
 
 	// Locomotion anim graph transitions
