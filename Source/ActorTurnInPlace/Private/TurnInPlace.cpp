@@ -36,6 +36,38 @@ DEFINE_LOG_CATEGORY_STATIC(LogTurnInPlace, Log, All);
 
 #define LOCTEXT_NAMESPACE "TurnInPlaceComponent"
 
+namespace TurnInPlaceLocal
+{
+	// Yaw delta from From to To, measured as a true world heading difference.
+	//
+	// Forward = (cosP*cosY, cosP*sinY, sinP) is independent of roll, and its world-horizontal heading is exactly Y,
+	// so when neither rotation has roll the FRotator yaw component already is the heading (pitch is irrelevant) and a
+	// plain yaw subtraction is exact. We only fall back to forward-vector projection when roll is present (e.g. the
+	// actor is tilted by a rolling ship deck), where world-space roll composition makes the stored yaw diverge from
+	// the heading. Gating on roll keeps flat-ground play on the original cheap math (and bit-identical for
+	// replicated TurnOffset). We deliberately do NOT gate on pitch: control rotation routinely carries pitch.
+	static float ComputeYawDeltaWorldHorizontal(const FRotator& From, const FRotator& To)
+	{
+		if (FMath::IsNearlyZero(From.Roll) && FMath::IsNearlyZero(To.Roll))
+		{
+			return FRotator::NormalizeAxis(To.Yaw - From.Yaw);
+		}
+
+		const FVector FromFwd = From.Vector();
+		const FVector ToFwd = To.Vector();
+		const FVector FromFwd2D = FVector(FromFwd.X, FromFwd.Y, 0.f).GetSafeNormal();
+		const FVector ToFwd2D = FVector(ToFwd.X, ToFwd.Y, 0.f).GetSafeNormal();
+		if (FromFwd2D.IsNearlyZero() || ToFwd2D.IsNearlyZero())
+		{
+			// Forward vectors are vertical (extreme pitch); fall back to FRotator component diff
+			return FRotator::NormalizeAxis(To.Yaw - From.Yaw);
+		}
+		const float Cross = FromFwd2D.X * ToFwd2D.Y - FromFwd2D.Y * ToFwd2D.X;
+		const float Dot = FromFwd2D.X * ToFwd2D.X + FromFwd2D.Y * ToFwd2D.Y;
+		return FMath::RadiansToDegrees(FMath::Atan2(Cross, Dot));
+	}
+}
+
 namespace TurnInPlaceCvars
 {
 #if UE_ENABLE_DEBUG_DRAWING
@@ -559,7 +591,9 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 		// If turn in place is paused, we can't accumulate any turn offset
 		if (State != ETurnInPlaceEnabledState::Paused)
 		{
-			TurnData.TurnOffset = (DesiredRotation - CurrentRotation).GetNormalized().Yaw;
+			// Yaw delta measured in the world-horizontal plane (robust to ship roll/pitch carried into the actor's
+			// rotation) rather than the raw FRotator yaw component, which suffers Euler-decomposition cross-talk.
+			TurnData.TurnOffset = TurnInPlaceLocal::ComputeYawDeltaWorldHorizontal(CurrentRotation, DesiredRotation);
 		}
 	}
 
@@ -627,11 +661,15 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 
 	if (!bClientSimulation)
 	{
-		// Normalize the turn offset to -180 to 180
-		const float ActorTurnRotation = FRotator::NormalizeAxis(DesiredRotation.Yaw - (TurnData.TurnOffset + CurrentRotation.Yaw));
+		// How much yaw the actor should rotate this frame, measured as a world heading difference.
+		// (FullOffset = yaw delta from actor to control; Remaining = TurnData.TurnOffset after curve deduction;
+		//  the actor closes the gap by FullOffset - Remaining each tick.)
+		const float FullOffset = TurnInPlaceLocal::ComputeYawDeltaWorldHorizontal(CurrentRotation, DesiredRotation);
+		const float ActorTurnRotation = FRotator::NormalizeAxis(FullOffset - TurnData.TurnOffset);
 
-		// Apply the turn offset to the character
-		GetOwner()->SetActorRotation(CurrentRotation + FRotator(0.f,  ActorTurnRotation, 0.f));
+		// Component-wise yaw add is exactly a world-Z rotation (Rz(d)*Rz(Y) = Rz(d+Y)) and preserves the actor's
+		// pitch/roll, so no quaternion round-trip is needed even when tilted by a moving base.
+		GetOwner()->SetActorRotation(CurrentRotation + FRotator(0.f, ActorTurnRotation, 0.f));
 	}
 	
 #if !UE_BUILD_SHIPPING
