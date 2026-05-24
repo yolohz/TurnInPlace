@@ -38,32 +38,36 @@ DEFINE_LOG_CATEGORY_STATIC(LogTurnInPlace, Log, All);
 
 namespace TurnInPlaceLocal
 {
-	// Yaw delta from From to To, measured as a true world heading difference.
+	// Yaw delta from From to To, measured as a heading difference about UpAxis.
 	//
 	// Forward = (cosP*cosY, cosP*sinY, sinP) is independent of roll, and its world-horizontal heading is exactly Y,
 	// so when neither rotation has roll the FRotator yaw component already is the heading (pitch is irrelevant) and a
-	// plain yaw subtraction is exact. We only fall back to forward-vector projection when roll is present (e.g. the
-	// actor is tilted by a rolling ship deck), where world-space roll composition makes the stored yaw diverge from
+	// plain yaw subtraction is exact. We only fall back to forward-vector projection when roll is present, 
+	// where world-space roll composition makes the stored yaw diverge from
 	// the heading. Gating on roll keeps flat-ground play on the original cheap math (and bit-identical for
 	// replicated TurnOffset). We deliberately do NOT gate on pitch: control rotation routinely carries pitch.
-	static float ComputeYawDeltaWorldHorizontal(const FRotator& From, const FRotator& To)
+	//
+	// UpAxis lets the heading be measured about a custom-gravity up instead of world Z. When
+	// UpAxis is world up the projection reduces to the original world-horizontal math.
+	static float ComputeYawDeltaAroundUp(const FRotator& From, const FRotator& To, const FVector& UpAxis = FVector::UpVector)
 	{
-		if (FMath::IsNearlyZero(From.Roll) && FMath::IsNearlyZero(To.Roll))
+		const bool bWorldUp = UpAxis.Equals(FVector::UpVector);
+		if (bWorldUp && FMath::IsNearlyZero(From.Roll) && FMath::IsNearlyZero(To.Roll))
 		{
 			return FRotator::NormalizeAxis(To.Yaw - From.Yaw);
 		}
 
 		const FVector FromFwd = From.Vector();
 		const FVector ToFwd = To.Vector();
-		const FVector FromFwd2D = FVector(FromFwd.X, FromFwd.Y, 0.f).GetSafeNormal();
-		const FVector ToFwd2D = FVector(ToFwd.X, ToFwd.Y, 0.f).GetSafeNormal();
-		if (FromFwd2D.IsNearlyZero() || ToFwd2D.IsNearlyZero())
+		const FVector FromFwdProj = FVector::VectorPlaneProject(FromFwd, UpAxis).GetSafeNormal();
+		const FVector ToFwdProj = FVector::VectorPlaneProject(ToFwd, UpAxis).GetSafeNormal();
+		if (FromFwdProj.IsNearlyZero() || ToFwdProj.IsNearlyZero())
 		{
-			// Forward vectors are vertical (extreme pitch); fall back to FRotator component diff
+			// Forward vectors are parallel to UpAxis (extreme pitch); fall back to FRotator component diff
 			return FRotator::NormalizeAxis(To.Yaw - From.Yaw);
 		}
-		const float Cross = FromFwd2D.X * ToFwd2D.Y - FromFwd2D.Y * ToFwd2D.X;
-		const float Dot = FromFwd2D.X * ToFwd2D.X + FromFwd2D.Y * ToFwd2D.Y;
+		const float Cross = (FromFwdProj ^ ToFwdProj) | UpAxis;
+		const float Dot = FromFwdProj | ToFwdProj;
 		return FMath::RadiansToDegrees(FMath::Atan2(Cross, Dot));
 	}
 }
@@ -431,6 +435,29 @@ ETurnInPlaceOverride UTurnInPlace::OverrideTurnInPlace_Implementation() const
 	return ETurnInPlaceOverride::Default;
 }
 
+bool UTurnInPlace::GetCustomGravity(FVector& GravityUp, FQuat& WorldToGravity, FQuat& GravityToWorld) const
+{
+	if (MaybeCharacter)
+	{
+		if (const UCharacterMovementComponent* CMC = MaybeCharacter->GetCharacterMovement())
+		{
+			if (CMC->HasCustomGravity())
+			{
+				const FVector Up = (-CMC->GetGravityDirection()).GetSafeNormal();
+				if (!Up.IsNearlyZero())
+				{
+					GravityUp = Up;
+					WorldToGravity = CMC->GetWorldToGravityTransform();
+					GravityToWorld = CMC->GetGravityToWorldTransform();
+					return true;
+				}
+			}
+		}
+	}
+	
+	return false;
+}
+
 FGameplayTag UTurnInPlace::GetTurnModeTag_Implementation() const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UTurnInPlace::GetTurnModeTag);
@@ -573,12 +600,32 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 	
 	// Determine the state of turn in place
 	const ETurnInPlaceEnabledState State = GetEnabledState(Params);
-	
-	// Turn in place is locked, we can't do anything
+
+	// Measure and apply yaw about the custom-gravity up axis when the character is gravity-aligned. 
+	// Falls back to world up, where the math reduces to the original world-horizontal behaviour.
+	FVector GravityUp = FVector::UpVector;
+	FQuat WorldToGravity = FQuat::Identity;
+	FQuat GravityToWorld = FQuat::Identity;
+	bool bCustomGravity = GetCustomGravity(GravityUp, WorldToGravity, GravityToWorld);
+
+	// Sets the actor vertical in gravity space at BaseWorldRotation's gravity-space heading plus an
+	// optional yaw delta (degrees) about the gravity up axis. Re-verticalling every frame is what keeps the body tilted
+	// to the base while standing, since the engine PhysicsRotation never runs in the FaceRotation (StrafeDirect) path.
+	auto ApplyGravityVertical = [&](const FRotator& BaseWorldRotation, float AddYawDeg)
+	{
+		const float GravYaw = (GravityToWorld * BaseWorldRotation.Quaternion()).Rotator().Yaw + AddYawDeg;
+		GetOwner()->SetActorRotation((WorldToGravity * FRotator(0.f, GravYaw, 0.f).Quaternion()).Rotator());
+	};
+
+	// Turn in place is locked, we can't turn - but still keep the body aligned to the base under custom gravity
 	const bool bEnabled = State != ETurnInPlaceEnabledState::Locked;
 	if (!bEnabled)
 	{
 		TurnData = {};
+		if (bCustomGravity && !bClientSimulation)
+		{
+			ApplyGravityVertical(CurrentRotation, 0.f);
+		}
 		return;
 	}
 
@@ -591,9 +638,9 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 		// If turn in place is paused, we can't accumulate any turn offset
 		if (State != ETurnInPlaceEnabledState::Paused)
 		{
-			// Yaw delta measured in the world-horizontal plane (robust to ship roll/pitch carried into the actor's
+			// Yaw delta measured about the gravity up axis (robust to ship roll/pitch carried into the actor's
 			// rotation) rather than the raw FRotator yaw component, which suffers Euler-decomposition cross-talk.
-			TurnData.TurnOffset = TurnInPlaceLocal::ComputeYawDeltaWorldHorizontal(CurrentRotation, DesiredRotation);
+			TurnData.TurnOffset = TurnInPlaceLocal::ComputeYawDeltaAroundUp(CurrentRotation, DesiredRotation, GravityUp);
 		}
 	}
 
@@ -661,15 +708,24 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 
 	if (!bClientSimulation)
 	{
-		// How much yaw the actor should rotate this frame, measured as a world heading difference.
+		// How much yaw the actor should rotate this frame, measured as a heading difference about the gravity up axis.
 		// (FullOffset = yaw delta from actor to control; Remaining = TurnData.TurnOffset after curve deduction;
 		//  the actor closes the gap by FullOffset - Remaining each tick.)
-		const float FullOffset = TurnInPlaceLocal::ComputeYawDeltaWorldHorizontal(CurrentRotation, DesiredRotation);
+		const float FullOffset = TurnInPlaceLocal::ComputeYawDeltaAroundUp(CurrentRotation, DesiredRotation, GravityUp);
 		const float ActorTurnRotation = FRotator::NormalizeAxis(FullOffset - TurnData.TurnOffset);
 
-		// Component-wise yaw add is exactly a world-Z rotation (Rz(d)*Rz(Y) = Rz(d+Y)) and preserves the actor's
-		// pitch/roll, so no quaternion round-trip is needed even when tilted by a moving base.
-		GetOwner()->SetActorRotation(CurrentRotation + FRotator(0.f, ActorTurnRotation, 0.f));
+		if (bCustomGravity)
+		{
+			// Rotate about the gravity up axis and re-vertical the capsule to gravity, so the body stays base-aligned
+			// (including while standing still, where ActorTurnRotation is ~0).
+			ApplyGravityVertical(CurrentRotation, ActorTurnRotation);
+		}
+		else
+		{
+			// Component-wise yaw add is exactly a world-Z rotation (Rz(d)*Rz(Y) = Rz(d+Y)) and preserves the actor's
+			// pitch/roll, so no quaternion round-trip is needed even when tilted by a moving base.
+			GetOwner()->SetActorRotation(CurrentRotation + FRotator(0.f, ActorTurnRotation, 0.f));
+		}
 	}
 	
 #if !UE_BUILD_SHIPPING
@@ -705,10 +761,10 @@ bool UTurnInPlace::FaceRotation(FRotator NewControlRotation, float DeltaTime)
 	// When DeltaTime is 0 this call is not the player controller asking us to face the control rotation; it is
 	// UCharacterMovementComponent::UpdateBasedMovement asking the actor to follow the movement base's rotation
 	// (see Engine/Private/Components/CharacterMovementComponent.cpp where FaceRotation is invoked with 0.f).
-	// Running the TurnInPlace logic on that input would treat the per-tick ship rotation delta as a fresh turn
+	// Running the TurnInPlace logic on that input would treat the per-tick base rotation delta as a fresh turn
 	// request, overwriting TurnData.TurnOffset with the tiny base delta and stealing the player's actual turn
 	// intent. The engine's UpdateBasedRotation then applies the actor's delta back to ControlRotation, producing
-	// the feedback loop where a turn on a rotating ship rotates the camera and re-triggers another turn.
+	// the feedback loop where a turn on a rotating base rotates the camera and re-triggers another turn.
 	// Defer to APawn::FaceRotation (and the engine's MoveUpdatedComponent fallback) for that pass-through.
 	if (DeltaTime == 0.f)
 	{

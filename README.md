@@ -82,6 +82,9 @@ There is too much in the anim graph that goes into building the system Lyra uses
 
 # Changelog
 
+### 1.6.1
+* Support for custom gravity direction
+
 ### 1.6.0
 _If these changes break stuff for you maybe ping @vaei in Unreal Source Discord or open an Issue here_
 

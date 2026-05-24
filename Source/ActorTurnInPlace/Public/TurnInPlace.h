@@ -204,6 +204,8 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category=Turn, meta=(GameplayTagFilter="TurnMode."))
 	FGameplayTag GetTurnModeTag() const;
 
+	virtual bool GetCustomGravity(FVector& GravityUp, FQuat& WorldToGravity, FQuat& GravityToWorld) const;
+	
 public:
 	/**
 	 * Get the current turn offset in degrees
