@@ -40,13 +40,12 @@ namespace TurnInPlaceLocal
 {
 	// Unit heading vector of a rotation within the plane perpendicular to UpAxis.
 	//
-	// The forward vector is the natural heading, but when the rotation looks almost straight along UpAxis (e.g. a
-	// first-person camera pitched down at the character's feet on a ship deck) its projection onto the plane collapses
-	// to a near-zero vector whose direction is wildly sensitive to UpAxis (the deck tilt). Re-deriving the heading from
-	// the right vector in that regime is stable: when you look straight down, your right vector still lies in the deck
-	// plane. We pick whichever basis vector projects more strongly into the plane, which is continuous across the
-	// crossover (for a roll-free look rotation both give the same heading) and well defined at every pitch, since
-	// forward and right can never both be parallel to UpAxis. (Fwd = Right x Up.)
+	// The forward vector is the natural heading, but when the rotation looks almost straight along UpAxis its
+	// projection onto the plane collapses to a near-zero vector whose direction is wildly sensitive to UpAxis. Re-
+	// deriving the heading from the right vector in that regime is stable: the right vector stays in-plane even when
+	// forward is parallel to UpAxis. We pick whichever basis vector projects more strongly into the plane, which is
+	// continuous across the crossover (for a roll-free rotation both give the same heading) and well defined at every
+	// pitch, since forward and right can never both be parallel to UpAxis. (Fwd = Right x Up.)
 	static FVector HeadingInPlane(const FRotator& Rot, const FVector& UpAxis)
 	{
 		const FQuat Q = Rot.Quaternion();
@@ -70,8 +69,8 @@ namespace TurnInPlaceLocal
 	//
 	// UpAxis lets the heading be measured about a custom-gravity up instead of world Z. When UpAxis is world up the
 	// projection reduces to the original world-horizontal math. HeadingInPlace keeps the measurement stable even when
-	// the control rotation looks nearly straight up/down the gravity axis, which otherwise made the projected heading
-	// swing as the deck rocked and spuriously drive turn-in-place.
+	// the rotation looks nearly straight up/down the up axis, which otherwise made the projected heading swing as the
+	// up axis moved and spuriously drive turn-in-place.
 	static float ComputeYawDeltaAroundUp(const FRotator& From, const FRotator& To, const FVector& UpAxis = FVector::UpVector)
 	{
 		const bool bWorldUp = UpAxis.Equals(FVector::UpVector);
@@ -631,7 +630,7 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 
 	// Sets the actor vertical in gravity space at BaseWorldRotation's gravity-space heading plus an
 	// optional yaw delta (degrees) about the gravity up axis. Re-verticalling every frame is what keeps the body tilted
-	// to the base while standing, since the engine PhysicsRotation never runs in the FaceRotation (StrafeDirect) path.
+	// to the base while standing, since the engine PhysicsRotation never runs in the FaceRotation path.
 	auto ApplyGravityVertical = [&](const FRotator& BaseWorldRotation, float AddYawDeg)
 	{
 		const float GravYaw = (GravityToWorld * BaseWorldRotation.Quaternion()).Rotator().Yaw + AddYawDeg;
@@ -659,7 +658,7 @@ void UTurnInPlace::TurnInPlace(const FRotator& CurrentRotation, const FRotator& 
 		// If turn in place is paused, we can't accumulate any turn offset
 		if (State != ETurnInPlaceEnabledState::Paused)
 		{
-			// Yaw delta measured about the gravity up axis (robust to ship roll/pitch carried into the actor's
+			// Yaw delta measured about the gravity up axis (robust to roll/pitch carried into the actor's
 			// rotation) rather than the raw FRotator yaw component, which suffers Euler-decomposition cross-talk.
 			TurnData.TurnOffset = TurnInPlaceLocal::ComputeYawDeltaAroundUp(CurrentRotation, DesiredRotation, GravityUp);
 		}
