@@ -38,17 +38,40 @@ DEFINE_LOG_CATEGORY_STATIC(LogTurnInPlace, Log, All);
 
 namespace TurnInPlaceLocal
 {
+	// Unit heading vector of a rotation within the plane perpendicular to UpAxis.
+	//
+	// The forward vector is the natural heading, but when the rotation looks almost straight along UpAxis (e.g. a
+	// first-person camera pitched down at the character's feet on a ship deck) its projection onto the plane collapses
+	// to a near-zero vector whose direction is wildly sensitive to UpAxis (the deck tilt). Re-deriving the heading from
+	// the right vector in that regime is stable: when you look straight down, your right vector still lies in the deck
+	// plane. We pick whichever basis vector projects more strongly into the plane, which is continuous across the
+	// crossover (for a roll-free look rotation both give the same heading) and well defined at every pitch, since
+	// forward and right can never both be parallel to UpAxis. (Fwd = Right x Up.)
+	static FVector HeadingInPlane(const FRotator& Rot, const FVector& UpAxis)
+	{
+		const FQuat Q = Rot.Quaternion();
+		const FVector FwdProj = FVector::VectorPlaneProject(Q.GetForwardVector(), UpAxis);
+		const FVector RightProj = FVector::VectorPlaneProject(Q.GetRightVector(), UpAxis);
+		if (FwdProj.SizeSquared() >= RightProj.SizeSquared())
+		{
+			return FwdProj.GetSafeNormal();
+		}
+		return FVector::CrossProduct(RightProj, UpAxis).GetSafeNormal();
+	}
+
 	// Yaw delta from From to To, measured as a heading difference about UpAxis.
 	//
 	// Forward = (cosP*cosY, cosP*sinY, sinP) is independent of roll, and its world-horizontal heading is exactly Y,
 	// so when neither rotation has roll the FRotator yaw component already is the heading (pitch is irrelevant) and a
-	// plain yaw subtraction is exact. We only fall back to forward-vector projection when roll is present, 
-	// where world-space roll composition makes the stored yaw diverge from
-	// the heading. Gating on roll keeps flat-ground play on the original cheap math (and bit-identical for
-	// replicated TurnOffset). We deliberately do NOT gate on pitch: control rotation routinely carries pitch.
+	// plain yaw subtraction is exact. We only fall back to projection when roll is present, where world-space roll
+	// composition makes the stored yaw diverge from the heading. Gating on roll keeps flat-ground play on the original
+	// cheap math (and bit-identical for replicated TurnOffset). We deliberately do NOT gate on pitch: control rotation
+	// routinely carries pitch.
 	//
-	// UpAxis lets the heading be measured about a custom-gravity up instead of world Z. When
-	// UpAxis is world up the projection reduces to the original world-horizontal math.
+	// UpAxis lets the heading be measured about a custom-gravity up instead of world Z. When UpAxis is world up the
+	// projection reduces to the original world-horizontal math. HeadingInPlace keeps the measurement stable even when
+	// the control rotation looks nearly straight up/down the gravity axis, which otherwise made the projected heading
+	// swing as the deck rocked and spuriously drive turn-in-place.
 	static float ComputeYawDeltaAroundUp(const FRotator& From, const FRotator& To, const FVector& UpAxis = FVector::UpVector)
 	{
 		const bool bWorldUp = UpAxis.Equals(FVector::UpVector);
@@ -57,17 +80,15 @@ namespace TurnInPlaceLocal
 			return FRotator::NormalizeAxis(To.Yaw - From.Yaw);
 		}
 
-		const FVector FromFwd = From.Vector();
-		const FVector ToFwd = To.Vector();
-		const FVector FromFwdProj = FVector::VectorPlaneProject(FromFwd, UpAxis).GetSafeNormal();
-		const FVector ToFwdProj = FVector::VectorPlaneProject(ToFwd, UpAxis).GetSafeNormal();
-		if (FromFwdProj.IsNearlyZero() || ToFwdProj.IsNearlyZero())
+		const FVector FromH = HeadingInPlane(From, UpAxis);
+		const FVector ToH = HeadingInPlane(To, UpAxis);
+		if (FromH.IsNearlyZero() || ToH.IsNearlyZero())
 		{
-			// Forward vectors are parallel to UpAxis (extreme pitch); fall back to FRotator component diff
+			// Unreachable in practice (forward and right can't both be parallel to UpAxis); kept as a safety net.
 			return FRotator::NormalizeAxis(To.Yaw - From.Yaw);
 		}
-		const float Cross = (FromFwdProj ^ ToFwdProj) | UpAxis;
-		const float Dot = FromFwdProj | ToFwdProj;
+		const float Cross = (FromH ^ ToH) | UpAxis;
+		const float Dot = FromH | ToH;
 		return FMath::RadiansToDegrees(FMath::Atan2(Cross, Dot));
 	}
 }
