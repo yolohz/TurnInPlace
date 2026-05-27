@@ -116,7 +116,7 @@ FRotator UTurnInPlaceMovement::ComputeOrientToMovementRotation(const FRotator& C
 		}
 
 		// Rotate towards last input vector
-		if (bRotateToLastInputVector && !LastInputVector.IsNearlyZero())
+		if (ShouldRotateToLastInputVector() && !LastInputVector.IsNearlyZero())
 		{
 			return LastInputVector.Rotation();
 		}
@@ -148,7 +148,7 @@ void UTurnInPlaceMovement::PhysicsRotation(float DeltaTime)
 		const float LastTurnOffset = TurnInPlace->GetTurnOffset();
 		
 		// We will abort handling if not stationary or not rotating to the last input vector
-		if (!TurnInPlace->PhysicsRotation(this, DeltaTime, bRotateToLastInputVector, LastInputVector))
+		if (!TurnInPlace->PhysicsRotation(this, DeltaTime, ShouldRotateToLastInputVector(), LastInputVector))
 		{
 			// Let CMC handle the rotation
 			Super::PhysicsRotation(DeltaTime);

@@ -60,12 +60,17 @@ public:
 	UTurnInPlace* GetTurnInPlace() const;
 
 public:
+	/** If true, will rotate to the last input vector when input is released. Only applied if bOrientRotationToMovement is true. */
+	virtual bool ShouldRotateToLastInputVector() const { return bRotateToLastInputVector; }
+	
 	/** Maintain the LastInputVector so we can rotate towards it */
-	void UpdateLastInputVector();
+	virtual void UpdateLastInputVector();
 
+protected:
 	/** Update the LastInputVector here because CalcVelocity() is not called while under the effects of root motion */
 	virtual void ApplyRootMotionToVelocity(float DeltaTime) override;
 
+public:
 	/** Virtual getter for rotation rate to vary rotation rate based on the current state */
 	virtual FRotator GetRotationRate() const;
 	virtual FRotator GetDeltaRotation(float DeltaTime) const override;

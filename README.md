@@ -82,6 +82,10 @@ There is too much in the anim graph that goes into building the system Lyra uses
 
 # Changelog
 
+### 1.6.2
+* Virtual function `ShouldRotateToLastInputVector()` added for runtime override
+* `UpdateLastInputVector()` now virtual
+
 ### 1.6.1
 * Support for custom gravity direction
 
