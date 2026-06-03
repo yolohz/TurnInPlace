@@ -475,6 +475,7 @@ struct ACTORTURNINPLACE_API FTurnInPlaceAnimGraphData
 		: TurnOffset(0)
 		, bIsTurning(false)
 		, bWasTurningThisEntry(false)
+		, bTurnAnimReachedEnd(false)
 		, bWantsToTurn(false)
 		, bAbortTurn(false)
 		, bTurnRight(false)
@@ -506,6 +507,15 @@ struct ACTORTURNINPLACE_API FTurnInPlaceAnimGraphData
 	 */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)
 	bool bWasTurningThisEntry;
+
+	/**
+	 * True once the turn animation has fully played out (explicit time reached its play length) for the current
+	 * entry into TurnInPlace. Lets bWantsTurnRecovery fire even when bWasTurningThisEntry never latched (e.g. the
+	 * turn-yaw-weight curve never registered this entry), preventing a permanent stuck-at-end-of-turn state.
+	 * Cannot be true on the entry frame, so it does not reopen the entry-frame oscillation bWasTurningThisEntry guards.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)
+	bool bTurnAnimReachedEnd;
 
 	/** TurnOffset is greater than MinTurnAngle or doing a small turn, used by anim graph to transition to turn */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)
@@ -607,6 +617,7 @@ struct ACTORTURNINPLACE_API FTurnInPlaceGraphNodeData
 		, bHasReachedMaxTurnAngle(false)
 		, bIsTurningRight(true)
 		, bIsRecoveryTurningRight(true)
+		, bReachedAnimEnd(false)
 	{}
 
 	/** Current step size to select animation from */
@@ -632,4 +643,12 @@ struct ACTORTURNINPLACE_API FTurnInPlaceGraphNodeData
 	/** Current recovery is to the right */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)
 	bool bIsRecoveryTurningRight;
+
+	/**
+	 * Persistent across the current TurnInPlace entry: set true once the turn animation's explicit time reaches
+	 * its play length, reset on entry (Setup). Copied into FTurnInPlaceAnimGraphData::bTurnAnimReachedEnd so the
+	 * recovery transition can fire when a turn finishes without ever registering as turning.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Category=Turn)
+	bool bReachedAnimEnd;
 };

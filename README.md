@@ -9,7 +9,7 @@
 > <br>Install this as a project plugin, not an engine plugin
 
 > [!TIP]
-> Supports UE5.3+
+> Supports UE5.4+
 
 > [!NOTE]
 > [Read the Wiki for Instructions and Complete Features!](https://github.com/Vaei/TurnInPlace/wiki/How-to-Use)
@@ -81,6 +81,15 @@ Furthermore, when adding procedural systems, however simple, they might fight yo
 There is too much in the anim graph that goes into building the system Lyra uses.
 
 # Changelog
+
+### 1.7.0
+***WARNING: UPDATE YOUR CONTENT OR ANIM GRAPHS***
+
+* Updated content to include Anim Graph fixes - Grab the latest!
+* Content updated to 5.4, 5.3 support dropped
+* Added `Implementation/TurnInPlaceAnimGraph.h` that contains C++ implementation of the Anim Graph functions
+	* Easier to see updates via diff and apply them manually without getting new content
+* Added fail-safe for weight curve not being found and reaching end of animation
 
 ### 1.6.2
 * Virtual function `ShouldRotateToLastInputVector()` added for runtime override

@@ -173,8 +173,15 @@ void UTurnInPlaceStatics::ThreadSafeUpdateTurnInPlace_Internal(const FTurnInPlac
 	// the turn at some point during this entry into TurnInPlace before the recovery transition is allowed to fire.
 	// Without this latch, the entry frame sees stale (Idle-era) curves and immediately fires recovery, producing
 	// the TurnInPlace<->TurnRecovery oscillation.
+	//
+	// Edge case the latch alone misses: if a turn plays to its end without the curve ever being observed >0,
+	// bWasTurningThisEntry never latches and the state can never recover -- it sits parked at the end of the turn
+	// animation forever. bTurnAnimReachedEnd is an oscillation-safe escape: it can only be true once the turn anim
+	// has fully played out (never on the entry frame), so OR-ing it in breaks the stuck state without reintroducing
+	// the entry-frame recovery oscillation.
 	Output.bWantsToTurn = AnimGraphData.bWantsToTurn;
-	Output.bWantsTurnRecovery = AnimGraphData.bWasTurningThisEntry && !AnimGraphData.bIsTurning && !AnimGraphData.bAbortTurn;
+	Output.bWantsTurnRecovery = (AnimGraphData.bWasTurningThisEntry || AnimGraphData.bTurnAnimReachedEnd) &&
+		!AnimGraphData.bIsTurning && !AnimGraphData.bAbortTurn;
 	Output.bAbortTurn = AnimGraphData.bAbortTurn;
 
 	// Locomotion anim graph transitions
